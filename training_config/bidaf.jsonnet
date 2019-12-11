@@ -20,8 +20,8 @@
       }
     }
   },
-  "train_data_path": "~/dl/nlp/train.jsonl",
-  "validation_data_path": "~/dl/nlp/dev.jsonl",
+  "train_data_path": "train.jsonl",
+  "validation_data_path": "dev.jsonl",
   "model": {
     "type": "bidaf",
     "text_field_embedder": {
