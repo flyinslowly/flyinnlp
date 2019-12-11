@@ -1,6 +1,3 @@
-// Configuration for the a machine comprehension model based on:
-//   Seo, Min Joon et al. “Bidirectional Attention Flow for Machine Comprehension.”
-//   ArXiv/1611.01603 (2016)
 {
   "dataset_reader": {
     "type": "squad",
