@@ -263,7 +263,6 @@ class BidirectionalAttentionFlow(Model):
         return output_dict
 
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
-        exact_match, f1_score = self._squad_metrics.get_metric(reset)
         return {
             "acc": self._accuracy.get_metric(reset)
         }
