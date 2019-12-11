@@ -20,8 +20,8 @@
       }
     }
   },
-  "train_data_path": "https://allennlp.s3.amazonaws.com/datasets/squad/squad-train-v1.1.json",
-  "validation_data_path": "https://allennlp.s3.amazonaws.com/datasets/squad/squad-dev-v1.1.json",
+  "train_data_path": "~/dl/nlp/train.jsonl",
+  "validation_data_path": "~/dl/nlp/dev.jsonl",
   "model": {
     "type": "bidaf",
     "text_field_embedder": {
@@ -89,7 +89,7 @@
     "num_epochs": 20,
     "grad_norm": 5.0,
     "patience": 10,
-    "validation_metric": "+em",
+    "validation_metric": "+acc",
     "cuda_device": 0,
     "learning_rate_scheduler": {
       "type": "reduce_on_plateau",

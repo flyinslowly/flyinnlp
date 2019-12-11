@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 import logging
 import string
 from typing import Any, Dict, List, Tuple
+import numpy as np
 
 from allennlp.data.fields import (
     Field,
@@ -14,6 +15,7 @@ from allennlp.data.fields import (
     MetadataField,
     LabelField,
     ListField,
+    ArrayField,
     SequenceLabelField,
 )
 from allennlp.data.instance import Instance
@@ -152,9 +154,8 @@ def make_reading_comprehension_instance(
     question_tokens: List[Token],
     passage_tokens: List[Token],
     token_indexers: Dict[str, TokenIndexer],
+    answer: List[bool],
     passage_text: str,
-    token_spans: List[Tuple[int, int]] = None,
-    answer_texts: List[str] = None,
     additional_metadata: Dict[str, Any] = None,
 ) -> Instance:
     """
@@ -204,28 +205,13 @@ def make_reading_comprehension_instance(
     passage_field = TextField(passage_tokens, token_indexers)
     fields["passage"] = passage_field
     fields["question"] = TextField(question_tokens, token_indexers)
+    fields["answer"] = ArrayField(np.array(answer))
     metadata = {
-        "original_passage": passage_text,
-        "token_offsets": passage_offsets,
-        "question_tokens": [token.text for token in question_tokens],
-        "passage_tokens": [token.text for token in passage_tokens],
+        # "original_passage": passage_text,
+        # "token_offsets": passage_offsets,
+        # "question_tokens": [token.text for token in question_tokens],
+        # "passage_tokens": [token.text for token in passage_tokens],
     }
-    if answer_texts:
-        metadata["answer_texts"] = answer_texts
-
-    if token_spans:
-        # There may be multiple answer annotations, so we pick the one that occurs the most.  This
-        # only matters on the SQuAD dev set, and it means our computed metrics ("start_acc",
-        # "end_acc", and "span_acc") aren't quite the same as the official metrics, which look at
-        # all of the annotations.  This is why we have a separate official SQuAD metric calculation
-        # (the "em" and "f1" metrics use the official script).
-        candidate_answers: Counter = Counter()
-        for span_start, span_end in token_spans:
-            candidate_answers[(span_start, span_end)] += 1
-        span_start, span_end = candidate_answers.most_common(1)[0][0]
-
-        fields["span_start"] = IndexField(span_start, passage_field)
-        fields["span_end"] = IndexField(span_end, passage_field)
 
     metadata.update(additional_metadata)
     fields["metadata"] = MetadataField(metadata)

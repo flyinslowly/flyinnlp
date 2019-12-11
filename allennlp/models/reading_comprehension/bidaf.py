@@ -2,7 +2,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 import torch
-from torch.nn.functional import nll_loss
+from torch.nn.functional import nll_loss, binary_cross_entropy_with_logits, sigmoid
 
 from allennlp.common.checks import check_dimensions_match
 from allennlp.data import Vocabulary
@@ -120,10 +120,7 @@ class BidirectionalAttentionFlow(Model):
             "4 * encoding dim + 3 * modeling dim",
         )
 
-        self._span_start_accuracy = CategoricalAccuracy()
-        self._span_end_accuracy = CategoricalAccuracy()
-        self._span_accuracy = BooleanAccuracy()
-        self._squad_metrics = SquadEmAndF1()
+        self._accuracy = BooleanAccuracy()
         if dropout > 0:
             self._dropout = torch.nn.Dropout(p=dropout)
         else:
@@ -136,8 +133,7 @@ class BidirectionalAttentionFlow(Model):
         self,
         question: Dict[str, torch.LongTensor],
         passage: Dict[str, torch.LongTensor],
-        span_start: torch.IntTensor = None,
-        span_end: torch.IntTensor = None,
+        answer: torch.BoolTensor = None,
         metadata: List[Dict[str, Any]] = None,
     ) -> Dict[str, torch.Tensor]:
 
@@ -246,121 +242,28 @@ class BidirectionalAttentionFlow(Model):
         # Shape: (batch_size, passage_length)
         span_start_logits = self._span_start_predictor(span_start_input).squeeze(-1)
         # Shape: (batch_size, passage_length)
-        span_start_probs = util.masked_softmax(span_start_logits, passage_mask)
-
-        # Shape: (batch_size, modeling_dim)
-        span_start_representation = util.weighted_sum(modeled_passage, span_start_probs)
-        # Shape: (batch_size, passage_length, modeling_dim)
-        tiled_start_representation = span_start_representation.unsqueeze(1).expand(
-            batch_size, passage_length, modeling_dim
-        )
-
-        # Shape: (batch_size, passage_length, encoding_dim * 4 + modeling_dim * 3)
-        span_end_representation = torch.cat(
-            [
-                final_merged_passage,
-                modeled_passage,
-                tiled_start_representation,
-                modeled_passage * tiled_start_representation,
-            ],
-            dim=-1,
-        )
-        # Shape: (batch_size, passage_length, encoding_dim)
-        encoded_span_end = self._dropout(
-            self._span_end_encoder(span_end_representation, passage_lstm_mask)
-        )
-        # Shape: (batch_size, passage_length, encoding_dim * 4 + span_end_encoding_dim)
-        span_end_input = self._dropout(torch.cat([final_merged_passage, encoded_span_end], dim=-1))
-        span_end_logits = self._span_end_predictor(span_end_input).squeeze(-1)
-        span_end_probs = util.masked_softmax(span_end_logits, passage_mask)
-        span_start_logits = util.replace_masked_values(span_start_logits, passage_mask, -1e7)
-        span_end_logits = util.replace_masked_values(span_end_logits, passage_mask, -1e7)
-        best_span = get_best_span(span_start_logits, span_end_logits)
+        prediction_bool_logits = util.masked_max(span_start_logits, passage_mask, dim=1)
 
         output_dict = {
             "passage_question_attention": passage_question_attention,
-            "span_start_logits": span_start_logits,
-            "span_start_probs": span_start_probs,
-            "span_end_logits": span_end_logits,
-            "span_end_probs": span_end_probs,
-            "best_span": best_span,
+            "prediction_bool_logits": prediction_bool_logits
         }
 
         # Compute the loss for training.
-        if span_start is not None:
-            loss = nll_loss(
-                util.masked_log_softmax(span_start_logits, passage_mask), span_start.squeeze(-1)
+        if answer is not None:
+            loss = binary_cross_entropy_with_logits(
+                prediction_bool_logits, answer
             )
-            self._span_start_accuracy(span_start_logits, span_start.squeeze(-1))
-            loss += nll_loss(
-                util.masked_log_softmax(span_end_logits, passage_mask), span_end.squeeze(-1)
-            )
-            self._span_end_accuracy(span_end_logits, span_end.squeeze(-1))
-            self._span_accuracy(best_span, torch.cat([span_start, span_end], -1))
+            threshold = 0.5
+            prediction_bool_logits = torch.where(torch.sigmoid(prediction_bool_logits) > threshold,
+                torch.ones_like(prediction_bool_logits), torch.zeros_like(prediction_bool_logits))
+            self._accuracy(prediction_bool_logits, answer)
             output_dict["loss"] = loss
 
-        # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
-        if metadata is not None:
-            output_dict["best_span_str"] = []
-            question_tokens = []
-            passage_tokens = []
-            token_offsets = []
-            for i in range(batch_size):
-                question_tokens.append(metadata[i]["question_tokens"])
-                passage_tokens.append(metadata[i]["passage_tokens"])
-                token_offsets.append(metadata[i]["token_offsets"])
-                passage_str = metadata[i]["original_passage"]
-                offsets = metadata[i]["token_offsets"]
-                predicted_span = tuple(best_span[i].detach().cpu().numpy())
-                start_offset = offsets[predicted_span[0]][0]
-                end_offset = offsets[predicted_span[1]][1]
-                best_span_string = passage_str[start_offset:end_offset]
-                output_dict["best_span_str"].append(best_span_string)
-                answer_texts = metadata[i].get("answer_texts", [])
-                if answer_texts:
-                    self._squad_metrics(best_span_string, answer_texts)
-            output_dict["question_tokens"] = question_tokens
-            output_dict["passage_tokens"] = passage_tokens
-            output_dict["token_offsets"] = token_offsets
         return output_dict
 
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
         exact_match, f1_score = self._squad_metrics.get_metric(reset)
         return {
-            "start_acc": self._span_start_accuracy.get_metric(reset),
-            "end_acc": self._span_end_accuracy.get_metric(reset),
-            "span_acc": self._span_accuracy.get_metric(reset),
-            "em": exact_match,
-            "f1": f1_score,
+            "acc": self._accuracy.get_metric(reset)
         }
-
-    @staticmethod
-    def get_best_span(
-        span_start_logits: torch.Tensor, span_end_logits: torch.Tensor
-    ) -> torch.Tensor:
-        # We call the inputs "logits" - they could either be unnormalized logits or normalized log
-        # probabilities.  A log_softmax operation is a constant shifting of the entire logit
-        # vector, so taking an argmax over either one gives the same result.
-        if span_start_logits.dim() != 2 or span_end_logits.dim() != 2:
-            raise ValueError("Input shapes must be (batch_size, passage_length)")
-        batch_size, passage_length = span_start_logits.size()
-        device = span_start_logits.device
-        # (batch_size, passage_length, passage_length)
-        span_log_probs = span_start_logits.unsqueeze(2) + span_end_logits.unsqueeze(1)
-        # Only the upper triangle of the span matrix is valid; the lower triangle has entries where
-        # the span ends before it starts.
-        span_log_mask = (
-            torch.triu(torch.ones((passage_length, passage_length), device=device))
-            .log()
-            .unsqueeze(0)
-        )
-        valid_span_log_probs = span_log_probs + span_log_mask
-
-        # Here we take the span matrix and flatten it, then find the best span using argmax.  We
-        # can recover the start and end indices from this flattened list using simple modular
-        # arithmetic.
-        # (batch_size, passage_length * passage_length)
-        best_spans = valid_span_log_probs.view(batch_size, -1).argmax(-1)
-        span_start_indices = best_spans // passage_length
-        span_end_indices = best_spans % passage_length
-        return torch.stack([span_start_indices, span_end_indices], dim=-1)
